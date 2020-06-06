@@ -11,7 +11,7 @@ dockerpath=jaganmohangumpa/devops
 # Step 2:  
 # Authenticate & tag
 docker login --username jaganmohangumpa
-docker tag resume $dockerpath
+docker tag devops $dockerpath
 echo "Docker ID and Image: $dockerpath"
 
 # Step 3:
