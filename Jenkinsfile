@@ -32,7 +32,10 @@ pipeline {
         sh 'echo eks...'
         sh '''
           echo "eks shell step works too"
-          
+          aws eks --region us-east-1 update-kubeconfig --name capstone-ekscluster
+          kubectl apply -f blue-deployment.json 
+          kubectl apply -f green-deployment.json
+          kubectl apply -f app-service.json
         '''
       }
     }
