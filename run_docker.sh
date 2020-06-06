@@ -12,4 +12,4 @@ docker image ls
 
 # Step 3: 
 # Run flask app
-docker run -it --rm --name devops -p 80:80 resume
+docker run -it --rm --name devops -p 80:80 devops

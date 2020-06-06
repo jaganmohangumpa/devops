@@ -1,0 +1,405 @@
+Description: >
+    Jaganmohan / MyDevops Project | Capstone Project
+Parameters:
+
+  VpcBlock:
+    Type: String
+    Default: 192.168.0.0/16
+    Description: The CIDR range for the VPC. This should be a valid private (RFC 1918) CIDR range.
+
+  Subnet01Block:
+    Type: String
+    Default: 192.168.64.0/18
+    Description: CidrBlock for subnet 01 within the VPC
+
+  Subnet02Block:
+    Type: String
+    Default: 192.168.128.0/18
+    Description: CidrBlock for subnet 02 within the VPC
+
+  Subnet03Block:
+    Type: String
+    Default: 192.168.192.0/18
+    Description: CidrBlock for subnet 03 within the VPC. This is used only if the region has more than 2 AZs.
+
+Metadata:
+  AWS::CloudFormation::Interface:
+    ParameterGroups:
+      -
+        Label:
+          default: "Worker Network Configuration"
+        Parameters:
+          - VpcBlock
+          - Subnet01Block
+          - Subnet02Block
+          - Subnet03Block
+
+Conditions:
+  Has2Azs:
+    Fn::Or:
+      - Fn::Equals:
+        - {Ref: 'AWS::Region'}
+        - ap-south-1
+      - Fn::Equals:
+        - {Ref: 'AWS::Region'}
+        - ap-northeast-2
+      - Fn::Equals:
+        - {Ref: 'AWS::Region'}
+        - ca-central-1
+      - Fn::Equals:
+        - {Ref: 'AWS::Region'}
+        - cn-north-1
+      - Fn::Equals:
+        - {Ref: 'AWS::Region'}
+        - sa-east-1
+      - Fn::Equals:
+        - {Ref: 'AWS::Region'}
+        - us-west-1
+
+  HasMoreThan2Azs:
+    Fn::Not:
+      - Condition: Has2Azs
+
+Resources:
+  VPC:
+    Type: AWS::EC2::VPC
+    Properties:
+      CidrBlock:  !Ref VpcBlock
+      EnableDnsSupport: true
+      EnableDnsHostnames: true
+      Tags:
+      - Key: Name
+        Value: !Sub '${AWS::StackName}-VPC'
+
+  InternetGateway:
+    Type: "AWS::EC2::InternetGateway"
+
+  VPCGatewayAttachment:
+    Type: "AWS::EC2::VPCGatewayAttachment"
+    Properties:
+      InternetGatewayId: !Ref InternetGateway
+      VpcId: !Ref VPC
+
+  RouteTable:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref VPC
+      Tags:
+      - Key: Name
+        Value: Public Subnets
+      - Key: Network
+        Value: Public
+
+  Route:
+    DependsOn: VPCGatewayAttachment
+    Type: AWS::EC2::Route
+    Properties:
+      RouteTableId: !Ref RouteTable
+      DestinationCidrBlock: 0.0.0.0/0
+      GatewayId: !Ref InternetGateway
+
+  Subnet01:
+    Type: AWS::EC2::Subnet
+    Metadata:
+      Comment: Subnet 01
+    Properties:
+      MapPublicIpOnLaunch: true
+      AvailabilityZone:
+        Fn::Select:
+        - '0'
+        - Fn::GetAZs:
+            Ref: AWS::Region
+      CidrBlock:
+        Ref: Subnet01Block
+      VpcId:
+        Ref: VPC
+      Tags:
+      - Key: Name
+        Value: !Sub "${AWS::StackName}-Subnet01"
+      - Key: kubernetes.io/role/elb
+        Value: 1
+
+  Subnet02:
+    Type: AWS::EC2::Subnet
+    Metadata:
+      Comment: Subnet 02
+    Properties:
+      MapPublicIpOnLaunch: true
+      AvailabilityZone:
+        Fn::Select:
+        - '1'
+        - Fn::GetAZs:
+            Ref: AWS::Region
+      CidrBlock:
+        Ref: Subnet02Block
+      VpcId:
+        Ref: VPC
+      Tags:
+      - Key: Name
+        Value: !Sub "${AWS::StackName}-Subnet02"
+      - Key: kubernetes.io/role/elb
+        Value: 1
+
+  Subnet03:
+    Condition: HasMoreThan2Azs
+    Type: AWS::EC2::Subnet
+    Metadata:
+      Comment: Subnet 03
+    Properties:
+      MapPublicIpOnLaunch: true
+      AvailabilityZone:
+        Fn::Select:
+        - '2'
+        - Fn::GetAZs:
+            Ref: AWS::Region
+      CidrBlock:
+        Ref: Subnet03Block
+      VpcId:
+        Ref: VPC
+      Tags:
+      - Key: Name
+        Value: !Sub "${AWS::StackName}-Subnet03"
+      - Key: kubernetes.io/role/elb
+        Value: 1
+
+  Subnet01RouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref Subnet01
+      RouteTableId: !Ref RouteTable
+
+  Subnet02RouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref Subnet02
+      RouteTableId: !Ref RouteTable
+
+  Subnet03RouteTableAssociation:
+    Condition: HasMoreThan2Azs
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref Subnet03
+      RouteTableId: !Ref RouteTable
+
+  ControlPlaneSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Cluster communication with worker nodes
+      VpcId: !Ref VPC
+
+  # IAM Roles
+  EKSClusterRole:
+      Type: AWS::IAM::Role
+      Properties:
+          AssumeRolePolicyDocument:
+              Version: '2012-10-17'
+              Statement:
+              - Effect: Allow
+                Principal:
+                  Service:
+                  - eks.amazonaws.com
+                Action:
+                - sts:AssumeRole
+          Tags: 
+              - Key: Name 
+                Value: !Sub ${AWS::StackName}-EKSClusterRole
+          ManagedPolicyArns:
+              - arn:aws:iam::aws:policy/AmazonEKSClusterPolicy
+              - arn:aws:iam::aws:policy/AmazonEKSServicePolicy
+              - arn:aws:iam::aws:policy/ElasticLoadBalancingFullAccess
+
+
+  SecGroup:
+      Type: AWS::EC2::SecurityGroup
+      Properties:
+          GroupDescription: Allow http and ssh to our load balancer
+          VpcId: !Ref VPC
+          SecurityGroupIngress:
+          -   IpProtocol: tcp
+              FromPort: 8080
+              ToPort: 8080
+              CidrIp: 0.0.0.0/0
+          -   IpProtocol: tcp
+              FromPort: 80
+              ToPort: 80
+              CidrIp: 0.0.0.0/0
+          -   IpProtocol: tcp
+              FromPort: 22
+              ToPort: 22
+              CidrIp: 0.0.0.0/0
+          SecurityGroupEgress:
+          -   IpProtocol: tcp
+              FromPort: 0
+              ToPort: 65535
+              CidrIp: 0.0.0.0/0
+
+  # EKS Setup
+  EKSCluster:
+      DependsOn:
+          - EKSClusterRole
+      Type: 'AWS::EKS::Cluster'
+      Properties:
+          Name: capstone-ekscluster
+          Version: '1.16'
+          RoleArn:  
+              Fn::GetAtt: [ EKSClusterRole, Arn ]
+          ResourcesVpcConfig:
+              SecurityGroupIds:
+              - !Ref SecGroup
+              SubnetIds:
+              - !Ref Subnet01
+              - !Ref Subnet02
+              - !Ref Subnet03
+
+  EKSNodeRole:
+        Type: AWS::IAM::Role
+        Properties:
+            AssumeRolePolicyDocument:
+                Version: '2012-10-17'
+                Statement:
+                - Effect: Allow
+                  Principal:
+                    Service:
+                    - ec2.amazonaws.com
+                  Action:
+                  - sts:AssumeRole
+            ManagedPolicyArns:
+            - arn:aws:iam::aws:policy/AmazonEKSWorkerNodePolicy
+            - arn:aws:iam::aws:policy/AmazonEC2ContainerRegistryReadOnly
+            - arn:aws:iam::aws:policy/AmazonEKS_CNI_Policy
+            Tags: 
+                - Key: Name 
+                  Value: !Sub ${AWS::StackName}-EKSNodeRole
+
+  EKSNodegroup:
+        DependsOn: 
+            - EKSNodeRole
+            - EKSCluster
+        Type: 'AWS::EKS::Nodegroup'
+        Properties:
+            ClusterName: capstone-ekscluster
+            NodeRole: !GetAtt EKSNodeRole.Arn
+            ScalingConfig:
+                MinSize: 1
+                DesiredSize: 1
+                MaxSize: 1
+            Labels:
+                Key1: !Sub ${AWS::StackName}-EKSNodegroup
+            Subnets:
+                - !Ref Subnet01
+                - !Ref Subnet02
+                - !Ref Subnet03
+
+  WebServerSecGroup:
+        Type: AWS::EC2::SecurityGroup
+        Properties:
+            GroupDescription: Allow http and ssh to our load balancer
+            VpcId: !Ref VPC
+            SecurityGroupIngress:
+            -   IpProtocol: tcp
+                FromPort: 8080
+                ToPort: 8080
+                CidrIp: 0.0.0.0/0
+            -   IpProtocol: tcp
+                FromPort: 80
+                ToPort: 80
+                CidrIp: 0.0.0.0/0
+            -   IpProtocol: tcp
+                FromPort: 22
+                ToPort: 22
+                CidrIp: 0.0.0.0/0
+            SecurityGroupEgress:
+            -   IpProtocol: tcp
+                FromPort: 0
+                ToPort: 65535
+                CidrIp: 0.0.0.0/0
+
+  # Jenkins Server Setup
+  JenkinsInstance:
+    Properties:
+      BlockDeviceMappings:
+      - DeviceName: "/dev/sdk"
+        Ebs:
+          VolumeSize: '8'
+      InstanceType: t2.micro
+      ImageId: ami-085925f297f89fce1
+      KeyName: "cloud9"
+      NetworkInterfaces: 
+        - AssociatePublicIpAddress: "true"
+          DeviceIndex: "0"
+          GroupSet: 
+            - Ref: WebServerSecGroup
+          SubnetId: 
+            Ref: "Subnet01"
+      UserData:
+        Fn::Base64: !Sub |
+          #!/bin/bash
+          #--Setup Server--
+          apt-get update -y
+          # Install Unzip
+          apt install unzip
+          # Get Hadolint
+          wget -O /usr/bin/hadolint https://github.com/hadolint/hadolint/releases/download/v1.17.6/hadolint-Linux-x86_64
+          chmod +x /usr/bin/hadolint
+          # Python 3 - Required for Boto
+          apt install python3-pip -y
+          # Install JQ for JSON Parsing
+          apt install jq
+          # Java Runtime for Jenkins
+          apt install default-jdk -y
+          # Tidy Used for Jenkins Linting
+          apt install tidy -y
+          # Docker Setup
+          apt install docker.io -y
+          # Ansible Setup
+          apt install ansible -y
+          # Boto Setup
+          pip3 install boto
+          # AWS CLI V2
+          curl "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o "awscliv2.zip"
+          unzip awscliv2.zip
+          ./aws/install
+          # Install Kubectl
+          curl -o kubectl https://amazon-eks.s3.us-west-2.amazonaws.com/1.16.8/2020-04-16/bin/linux/amd64/kubectl
+          chmod +x ./kubectl
+          mkdir -p $HOME/bin && cp ./kubectl $HOME/bin/kubectl && export PATH=$PATH:$HOME/bin
+          echo 'export PATH=$PATH:$HOME/bin' >> ~/.bashrc
+          # Install eksctl
+          curl --silent --location "https://github.com/weaveworks/eksctl/releases/download/0.20.0-rc.0/eksctl_Linux_amd64.tar.gz" | tar xz -C /tmp
+          mv /tmp/eksctl /usr/local/bin
+          # Add Jenkins Key and Source List to Server
+          wget -q -O - https://pkg.Jenkins.io/debian-stable/jenkins.io.key | sudo apt-key add -
+          sh -c "echo 'deb https://pkg.jenkins.io/debian-stable binary/' > /etc/apt/sources.list.d/jenkins.list"
+          apt-get update
+          # Start Jenkins and Setup to Run when Ubunto Starts
+          apt install jenkins -y
+          # Adding Jenkins to the Docker Security Group (Allow Aqua MicroScanner Access to Scan)
+          usermod -a -G docker jenkins
+          systemctl start jenkins
+          systemctl enable jenkins
+          systemctl status jenkins
+    Type: AWS::EC2::Instance
+
+
+
+Outputs:
+
+  SubnetIds:
+    Description: All subnets in the VPC
+    Value:
+      Fn::If:
+      - HasMoreThan2Azs
+      - !Join [ ",", [ !Ref Subnet01, !Ref Subnet02, !Ref Subnet03 ] ]
+      - !Join [ ",", [ !Ref Subnet01, !Ref Subnet02 ] ]
+
+  SecurityGroups:
+    Description: Security group for the cluster control plane communication with worker nodes
+    Value: !Join [ ",", [ !Ref ControlPlaneSecurityGroup ] ]
+
+  VpcId:
+    Description: The VPC Id
+    Value: !Ref VPC
+
+  EKSClusterInstanceARN:
+        Description: A reference to the created EKS Cluster
+        Value: !GetAtt EKSCluster.Arn
